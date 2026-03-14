@@ -93,6 +93,7 @@ export interface CreateRouterOptions {
   threadService?: ThreadService;
   providers?: Record<'codex' | 'claude', ProviderAdapter>;
   providerOptions?: CreateProviderAdaptersOptions;
+  eventSink?: (event: ServerEvent) => void;
 }
 
 export function createRouter(options: CreateRouterOptions = {}): Router {
@@ -102,6 +103,10 @@ export function createRouter(options: CreateRouterOptions = {}): Router {
 
   const state: RouterState = {
     sessionId: null,
+  };
+
+  const emitEvent = (event: ServerEvent): void => {
+    options.eventSink?.(event);
   };
 
   return {
@@ -250,20 +255,44 @@ export function createRouter(options: CreateRouterOptions = {}): Router {
             content: params.input,
           });
 
-          const providerResult = adapters[provider].startTurn({
+          const startedEvent = createTurnStartedEvent({
             threadId: params.threadId,
             turnId,
-            input: params.input,
+            provider,
           });
 
-          const events: ServerEvent[] = [
-            createTurnStartedEvent({
+          const events: ServerEvent[] = [startedEvent];
+
+          // Immediate started event for synchronous response path.
+          emitEvent(startedEvent);
+
+          if (
+            provider === 'claude'
+            && options.providerOptions?.claudeMode === 'cli'
+            && adapters[provider].startTurnStreaming
+          ) {
+            void adapters[provider].startTurnStreaming(
+              {
+                threadId: params.threadId,
+                turnId,
+                input: params.input,
+              },
+              (event) => {
+                assertCamelCaseKeys(event);
+                emitEvent(event);
+              },
+            );
+          } else {
+            const providerResult = adapters[provider].startTurn({
               threadId: params.threadId,
               turnId,
-              provider,
-            }),
-            ...providerResult.events,
-          ];
+              input: params.input,
+            });
+            events.push(...providerResult.events);
+            for (const event of providerResult.events) {
+              emitEvent(event);
+            }
+          }
 
           assertCamelCaseKeys(events);
 
@@ -272,7 +301,7 @@ export function createRouter(options: CreateRouterOptions = {}): Router {
               ? ok(value.id, {
                   turnId,
                   status: 'started',
-                  accepted: providerResult.accepted,
+                  accepted: true,
                 })
               : undefined,
             events,

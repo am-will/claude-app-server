@@ -37,12 +37,14 @@ function getResult<T = unknown>(response: JsonRpcResponse | undefined): T {
 }
 
 describe.skipIf(!runReal)('real claude smoke', () => {
-  it('gets a real Claude response through turn.start', () => {
+  it('gets a real Claude response through turn.start', async () => {
+    const streamed: ServerEvent[] = [];
     const router = createRouter({
       dataDir: createTempDataDir(),
       providerOptions: {
         claudeMode: 'cli',
       },
+      eventSink: (event) => streamed.push(event),
     });
 
     const threadOut = router.handle({
@@ -69,15 +71,21 @@ describe.skipIf(!runReal)('real claude smoke', () => {
 
     getResult(turnOut.response);
 
-    const methods = turnOut.events.map((event: ServerEvent) => event.method);
+    const deadline = Date.now() + 20000;
+    while (!streamed.some((event) => event.method === 'event.turnCompleted') && Date.now() < deadline) {
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+
+    const methods = streamed.map((event: ServerEvent) => event.method);
     expect(methods).toContain('event.turnStarted');
     expect(methods).toContain('event.turnCompleted');
 
-    const deltas = turnOut.events
+    const deltas = streamed
       .filter((event) => event.method === 'event.turnDelta')
       .map((event) => String((event.params as Record<string, unknown>).chunk ?? ''));
 
     expect(deltas.join('')).toContain('CLAUDE_SERVER_SMOKE_OK');
-    expect(hasSnakeCaseKeys(turnOut)).toBe(false);
+    expect(hasSnakeCaseKeys(streamed)).toBe(false);
   });
 });

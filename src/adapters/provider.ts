@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import type { ServerEvent } from '../protocol/types.js';
 import { createTurnCompletedEvent, createTurnDeltaEvent } from '../server/events.js';
 
@@ -17,6 +17,7 @@ export interface ProviderTurnStartResult {
 export interface ProviderAdapter {
   readonly name: 'codex' | 'claude';
   startTurn(input: ProviderTurnStartInput): ProviderTurnStartResult;
+  startTurnStreaming?(input: ProviderTurnStartInput, emit: (event: ServerEvent) => void): Promise<ProviderTurnStartResult>;
 }
 
 export interface CreateProviderAdaptersOptions {
@@ -246,6 +247,111 @@ export class ClaudeProviderAdapter implements ProviderAdapter {
       events: translated,
     };
   }
+
+  public async startTurnStreaming(
+    input: ProviderTurnStartInput,
+    emit: (event: ServerEvent) => void,
+  ): Promise<ProviderTurnStartResult> {
+    if (this.options.mode !== 'cli') {
+      const result = this.startTurn(input);
+      for (const event of result.events) emit(event);
+      return result;
+    }
+
+    return await new Promise<ProviderTurnStartResult>((resolve) => {
+      const child = spawn(
+        'claude',
+        [
+          '-p',
+          input.input,
+          '--output-format',
+          'stream-json',
+          '--include-partial-messages',
+          '--verbose',
+          '--permission-mode',
+          this.options.permissionMode,
+        ],
+        { stdio: ['ignore', 'pipe', 'pipe'] },
+      );
+
+      let stdout = '';
+      let stderr = '';
+      let seenCompleted = false;
+
+      const handleLine = (line: string) => {
+        const parsed = parseJsonLines(line);
+        const events = translateClaudeStreamEvents(parsed, {
+          threadId: input.threadId,
+          turnId: input.turnId,
+        });
+        for (const event of events) {
+          if (event.method === 'event.turnCompleted') seenCompleted = true;
+          emit(event);
+        }
+      };
+
+      child.stdout.setEncoding('utf8');
+      child.stdout.on('data', (chunk: string) => {
+        stdout += chunk;
+        let idx;
+        while ((idx = stdout.indexOf('\n')) >= 0) {
+          const line = stdout.slice(0, idx).trim();
+          stdout = stdout.slice(idx + 1);
+          if (line) handleLine(line);
+        }
+      });
+
+      child.stderr.setEncoding('utf8');
+      child.stderr.on('data', (chunk: string) => {
+        stderr += chunk;
+      });
+
+      child.on('close', (code) => {
+        if (stdout.trim()) {
+          handleLine(stdout.trim());
+        }
+        if (!seenCompleted) {
+          emit(
+            createTurnCompletedEvent({
+              threadId: input.threadId,
+              turnId: input.turnId,
+              stopReason: code === 0 ? 'endTurn' : 'providerError',
+            }),
+          );
+        }
+        resolve({
+          accepted: code === 0,
+          providerMessage: code === 0
+            ? 'claude adapter streaming completed'
+            : `claude exited with status ${code ?? 'unknown'}${stderr ? `: ${stderr.trim()}` : ''}`,
+          events: [],
+        });
+      });
+
+      child.on('error', (err) => {
+        emit(
+          createTurnDeltaEvent({
+            threadId: input.threadId,
+            turnId: input.turnId,
+            chunk: `Claude execution error: ${err.message}`,
+          }),
+        );
+        emit(
+          createTurnCompletedEvent({
+            threadId: input.threadId,
+            turnId: input.turnId,
+            stopReason: 'providerError',
+          }),
+        );
+        resolve({
+          accepted: false,
+          providerMessage: `claude adapter failed: ${err.message}`,
+          events: [],
+        });
+      });
+    });
+  }
+
 }
 
 export function createProviderAdapters(options: CreateProviderAdaptersOptions = {}): Record<'codex' | 'claude', ProviderAdapter> {
