@@ -82,10 +82,9 @@ Merge gate: no green contract suite, no merge.
 
 ## 5) Fixture Strategy
 
-Maintain versioned fixtures under `tests/fixtures/v1/`:
-- `requests/*.json` (input envelopes)
-- `responses/*.json` (expected canonical outputs)
-- `streams/*.jsonl` (notification sequences)
+Maintain versioned fixtures under `tests/contract/v1/`:
+- `*.fixture.json` (request sequences + result assertions)
+- stream fixture payloads embedded in adapter tests when provider events are small
 
 Fixture naming format:
 `<method>.<scenario>.<direction>.json`

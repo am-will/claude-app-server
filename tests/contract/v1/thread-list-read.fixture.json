@@ -1,0 +1,48 @@
+{
+  "seed": [
+    {
+      "jsonrpc": "2.0",
+      "id": "thread-start",
+      "method": "thread.start",
+      "params": {
+        "title": "Fixture Thread",
+        "tags": ["fixture"]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": "turn-start",
+      "method": "turn.start",
+      "params": {
+        "thread_id": "$lastThreadId",
+        "input": "from fixture"
+      }
+    }
+  ],
+  "assertions": [
+    {
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "thread-list",
+        "method": "thread.list",
+        "params": {
+          "tag": "fixture"
+        }
+      },
+      "expectResultPath": "threads.0.threadId",
+      "equals": "$lastThreadId"
+    },
+    {
+      "request": {
+        "jsonrpc": "2.0",
+        "id": "thread-read",
+        "method": "thread.read",
+        "params": {
+          "thread_id": "$lastThreadId"
+        }
+      },
+      "expectResultPath": "thread.messages.0.content",
+      "equals": "from fixture"
+    }
+  ]
+}

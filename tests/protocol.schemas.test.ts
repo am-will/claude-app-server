@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   parseJsonRpcMessage,
   parseJsonRpcRequest,
+  parseThreadReadParams,
+  parseTurnStartParams,
   responseSchema,
 } from '../src/protocol/schemas.js';
 
@@ -58,5 +60,17 @@ describe('protocol schemas', () => {
     });
 
     expect(parsed.jsonrpc).toBe('2.0');
+  });
+
+  it('accepts snake_case aliases at input boundaries only', () => {
+    expect(parseThreadReadParams({ thread_id: 'thread-1' })).toEqual({ threadId: 'thread-1' });
+    expect(parseTurnStartParams({ thread_id: 'thread-1', input: 'hi' })).toEqual({
+      threadId: 'thread-1',
+      input: 'hi',
+    });
+  });
+
+  it('rejects conflicting aliases', () => {
+    expect(() => parseThreadReadParams({ threadId: 'a', thread_id: 'b' })).toThrow(/conflicting aliases/i);
   });
 });

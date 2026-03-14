@@ -62,3 +62,15 @@ export function createTurnDeltaEvent(input: {
     chunk: input.chunk,
   });
 }
+
+export function createTurnCompletedEvent(input: {
+  threadId: string;
+  turnId: string;
+  stopReason?: string;
+}): ServerEvent {
+  return createEvent('turnCompleted', {
+    threadId: input.threadId,
+    turnId: input.turnId,
+    stopReason: input.stopReason ?? 'endTurn',
+  });
+}

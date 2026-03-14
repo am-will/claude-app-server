@@ -1,22 +1,30 @@
-import { createProviderAdapters } from '../adapters/provider.js';
+import { createProviderAdapters, type ProviderAdapter } from '../adapters/provider.js';
+import { ThreadService } from '../core/threadService.js';
 import {
   buildInvalidRequestError,
   parseJsonRpcMessage,
+  parseThreadListParams,
+  parseThreadReadParams,
+  parseThreadStartParams,
+  parseTurnStartParams,
   requestSchema,
 } from '../protocol/schemas.js';
 import type {
   JsonRpcErrorResponse,
   JsonRpcResponse,
   JsonRpcSuccessResponse,
+  ParsedJsonRpcMessage,
   ServerEvent,
-  TurnStartParams,
 } from '../protocol/types.js';
-import { createTurnDeltaEvent, createTurnStartedEvent } from './events.js';
+import { createTurnStartedEvent } from './events.js';
+import { ThreadStateStore } from '../state/threadStore.js';
 
 const SUPPORTED_METHODS = [
   'session.initialize',
   'capability.list',
   'thread.start',
+  'thread.list',
+  'thread.read',
   'turn.start',
 ] as const;
 
@@ -27,7 +35,6 @@ interface RouterOutput {
 
 interface RouterState {
   sessionId: string | null;
-  threads: Set<string>;
 }
 
 function nextId(prefix: string): string {
@@ -81,11 +88,19 @@ export interface Router {
   handle(input: unknown): RouterOutput;
 }
 
-export function createRouter(): Router {
-  const adapters = createProviderAdapters();
+export interface CreateRouterOptions {
+  dataDir?: string;
+  threadService?: ThreadService;
+  providers?: Record<'codex' | 'claude', ProviderAdapter>;
+}
+
+export function createRouter(options: CreateRouterOptions = {}): Router {
+  const adapters = options.providers ?? createProviderAdapters();
+  const threadService = options.threadService
+    ?? new ThreadService(new ThreadStateStore({ baseDir: options.dataDir }));
+
   const state: RouterState = {
     sessionId: null,
-    threads: new Set(),
   };
 
   return {
@@ -141,71 +156,132 @@ export function createRouter(): Router {
       }
 
       if (value.method === 'thread.start') {
-        const threadId = nextId('thread');
-        state.threads.add(threadId);
+        try {
+          const params = parseThreadStartParams(value.params ?? {});
+          const threadId = nextId('thread');
+          const created = threadService.createThread({
+            threadId,
+            title: params.title,
+            tags: params.tags,
+          });
 
-        return {
-          response: kind === 'request'
-            ? ok(value.id, {
-                threadId,
-                created: true,
-              })
-            : undefined,
-          events: [],
-        };
-      }
-
-      if (value.method === 'turn.start') {
-        const params = (value.params ?? {}) as TurnStartParams;
-
-        if (!params.threadId || !params.input) {
+          return {
+            response: kind === 'request'
+              ? ok(value.id, {
+                  threadId: created.threadId,
+                  created: true,
+                })
+              : undefined,
+            events: [],
+          };
+        } catch {
           return {
             response: kind === 'request' ? error(value.id, -32602, 'Invalid params') : undefined,
             events: [],
           };
         }
+      }
 
-        if (!state.threads.has(params.threadId)) {
+      if (value.method === 'thread.list') {
+        try {
+          const params = parseThreadListParams(value.params ?? {});
+          const threads = threadService.listThreads(params);
           return {
-            response: kind === 'request' ? error(value.id, -32004, 'Thread not found') : undefined,
+            response: kind === 'request'
+              ? ok(value.id, {
+                  threads,
+                })
+              : undefined,
+            events: [],
+          };
+        } catch {
+          return {
+            response: kind === 'request' ? error(value.id, -32602, 'Invalid params') : undefined,
             events: [],
           };
         }
+      }
 
-        const turnId = nextId('turn');
-        const provider = params.provider ?? 'codex';
+      if (value.method === 'thread.read') {
+        try {
+          const params = parseThreadReadParams(value.params ?? {});
+          const thread = threadService.readThread(params.threadId);
 
-        // Fire-and-forget stub adapter kickoff for stream provider.
-        void adapters[provider].startTurn({
-          threadId: params.threadId,
-          turnId,
-          input: params.input,
-        });
+          if (!thread) {
+            return {
+              response: kind === 'request' ? error(value.id, -32004, 'Thread not found') : undefined,
+              events: [],
+            };
+          }
 
-        const events = [
-          createTurnStartedEvent({
+          return {
+            response: kind === 'request' ? ok(value.id, { thread }) : undefined,
+            events: [],
+          };
+        } catch {
+          return {
+            response: kind === 'request' ? error(value.id, -32602, 'Invalid params') : undefined,
+            events: [],
+          };
+        }
+      }
+
+      if (value.method === 'turn.start') {
+        try {
+          const params = parseTurnStartParams(value.params ?? {});
+          const existing = threadService.readThread(params.threadId);
+
+          if (!existing) {
+            return {
+              response: kind === 'request' ? error(value.id, -32004, 'Thread not found') : undefined,
+              events: [],
+            };
+          }
+
+          const turnId = nextId('turn');
+          const messageId = nextId('msg');
+          const provider = params.provider ?? 'codex';
+
+          threadService.addMessage({
+            threadId: params.threadId,
+            messageId,
+            role: 'user',
+            content: params.input,
+          });
+
+          const providerResult = adapters[provider].startTurn({
             threadId: params.threadId,
             turnId,
-            provider,
-          }),
-          createTurnDeltaEvent({
-            threadId: params.threadId,
-            turnId,
-            chunk: 'Mock stream kickoff',
-          }),
-        ];
+            input: params.input,
+          });
 
-        assertCamelCaseKeys(events);
+          const events: ServerEvent[] = [
+            createTurnStartedEvent({
+              threadId: params.threadId,
+              turnId,
+              provider,
+            }),
+            ...providerResult.events,
+          ];
 
-        return {
-          response: kind === 'request'
-            ? ok(value.id, {
-                turnId,
-                status: 'started',
-              })
-            : undefined,
-          events,
-        };
+          assertCamelCaseKeys(events);
+
+          return {
+            response: kind === 'request'
+              ? ok(value.id, {
+                  turnId,
+                  status: 'started',
+                  accepted: providerResult.accepted,
+                })
+              : undefined,
+            events,
+          };
+        } catch {
+          return {
+            response: kind === 'request' ? error(value.id, -32602, 'Invalid params') : undefined,
+            events: [],
+          };
+        }
       }
 
       if (kind === 'request') {
@@ -224,7 +300,7 @@ export function createRouter(): Router {
 }
 
 function parseJsonRpcMessageSafe(input: unknown):
-  | { success: true; message: ReturnType<typeof parseJsonRpcMessage> }
+  | { success: true; message: ParsedJsonRpcMessage }
   | { success: false; error: string } {
   const probe = requestSchema.safeParse(input);
   if (probe.success) {

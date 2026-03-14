@@ -50,6 +50,15 @@ export interface SessionInitializeParams {
 
 export interface ThreadStartParams {
   title?: string;
+  tags?: string[];
+}
+
+export interface ThreadListParams {
+  tag?: string;
+}
+
+export interface ThreadReadParams {
+  threadId: string;
 }
 
 export interface TurnStartParams {

@@ -5,6 +5,10 @@ import type {
   JsonRpcRequest,
   JsonRpcResponse,
   ParsedJsonRpcMessage,
+  ThreadListParams,
+  ThreadReadParams,
+  ThreadStartParams,
+  TurnStartParams,
 } from './types.js';
 
 const camelCaseSegment = '[a-z][A-Za-z0-9]*';
@@ -52,6 +56,99 @@ export const responseSchema = z.union([
 ]);
 
 const messageSchema = z.union([requestSchema, notificationSchema]);
+
+const threadStartParamsSchema = z
+  .object({
+    title: z.string().min(1).optional(),
+    tags: z.array(z.string().min(1)).optional(),
+  })
+  .strict();
+
+const threadListParamsSchema = z
+  .object({
+    tag: z.string().min(1).optional(),
+  })
+  .strict();
+
+const threadReadParamsSchema = z
+  .object({
+    threadId: z.string().min(1),
+  })
+  .strict();
+
+const turnStartParamsSchema = z
+  .object({
+    threadId: z.string().min(1),
+    input: z.string().min(1),
+    provider: z.enum(['codex', 'claude']).optional(),
+  })
+  .strict();
+
+function normalizeObjectAliases(input: unknown): Record<string, unknown> {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    return {};
+  }
+
+  return { ...(input as Record<string, unknown>) };
+}
+
+function readAliasedField(
+  source: Record<string, unknown>,
+  canonicalKey: string,
+  snakeKey: string,
+): unknown {
+  const camel = source[canonicalKey];
+  const snake = source[snakeKey];
+
+  if (camel !== undefined && snake !== undefined && camel !== snake) {
+    throw new Error(`Invalid params: conflicting aliases for ${canonicalKey}`);
+  }
+
+  return camel ?? snake;
+}
+
+export function parseThreadStartParams(input: unknown): ThreadStartParams {
+  const source = normalizeObjectAliases(input);
+
+  const normalized = {
+    title: source.title,
+    tags: source.tags,
+  };
+
+  return threadStartParamsSchema.parse(normalized) as ThreadStartParams;
+}
+
+export function parseThreadListParams(input: unknown): ThreadListParams {
+  const source = normalizeObjectAliases(input);
+
+  const normalized = {
+    tag: source.tag,
+  };
+
+  return threadListParamsSchema.parse(normalized) as ThreadListParams;
+}
+
+export function parseThreadReadParams(input: unknown): ThreadReadParams {
+  const source = normalizeObjectAliases(input);
+
+  const normalized = {
+    threadId: readAliasedField(source, 'threadId', 'thread_id'),
+  };
+
+  return threadReadParamsSchema.parse(normalized) as ThreadReadParams;
+}
+
+export function parseTurnStartParams(input: unknown): TurnStartParams {
+  const source = normalizeObjectAliases(input);
+
+  const normalized = {
+    threadId: readAliasedField(source, 'threadId', 'thread_id'),
+    input: source.input,
+    provider: source.provider,
+  };
+
+  return turnStartParamsSchema.parse(normalized) as TurnStartParams;
+}
 
 export function parseJsonRpcRequest(input: unknown): JsonRpcRequest {
   return requestSchema.parse(input) as JsonRpcRequest;
