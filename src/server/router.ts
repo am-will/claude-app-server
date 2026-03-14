@@ -1,4 +1,4 @@
-import { createProviderAdapters, type ProviderAdapter } from '../adapters/provider.js';
+import { createProviderAdapters, type CreateProviderAdaptersOptions, type ProviderAdapter } from '../adapters/provider.js';
 import { ThreadService } from '../core/threadService.js';
 import {
   buildInvalidRequestError,
@@ -92,10 +92,11 @@ export interface CreateRouterOptions {
   dataDir?: string;
   threadService?: ThreadService;
   providers?: Record<'codex' | 'claude', ProviderAdapter>;
+  providerOptions?: CreateProviderAdaptersOptions;
 }
 
 export function createRouter(options: CreateRouterOptions = {}): Router {
-  const adapters = options.providers ?? createProviderAdapters();
+  const adapters = options.providers ?? createProviderAdapters(options.providerOptions);
   const threadService = options.threadService
     ?? new ThreadService(new ThreadStateStore({ baseDir: options.dataDir }));
 
