@@ -7,6 +7,7 @@ import {
   parseThreadReadParams,
   parseThreadStartParams,
   parseTurnStartParams,
+  parseSkillsListParams,
   requestSchema,
 } from '../protocol/schemas.js';
 import type {
@@ -18,6 +19,7 @@ import type {
 } from '../protocol/types.js';
 import { createTurnStartedEvent } from './events.js';
 import { ThreadStateStore } from '../state/threadStore.js';
+import { listSkillsForCwds } from '../skills/listSkills.js';
 
 const SUPPORTED_METHODS = [
   'session.initialize',
@@ -26,6 +28,7 @@ const SUPPORTED_METHODS = [
   'thread.list',
   'thread.read',
   'turn.start',
+  'skills.list',
 ] as const;
 
 interface RouterOutput {
@@ -305,6 +308,26 @@ export function createRouter(options: CreateRouterOptions = {}): Router {
                 })
               : undefined,
             events,
+          };
+        } catch {
+          return {
+            response: kind === 'request' ? error(value.id, -32602, 'Invalid params') : undefined,
+            events: [],
+          };
+        }
+      }
+
+      if (value.method === 'skills.list') {
+        try {
+          const params = parseSkillsListParams(value.params ?? {});
+          const requestedCwds = params.cwds?.length
+            ? params.cwds
+            : [params.cwd ?? process.cwd()];
+          const data = listSkillsForCwds(requestedCwds);
+
+          return {
+            response: kind === 'request' ? ok(value.id, { data }) : undefined,
+            events: [],
           };
         } catch {
           return {

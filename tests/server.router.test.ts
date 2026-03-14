@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -79,6 +79,7 @@ describe('server router', () => {
         'thread.list',
         'thread.read',
         'turn.start',
+        'skills.list',
       ],
     });
   });
@@ -177,6 +178,43 @@ describe('server router', () => {
       expect.arrayContaining(['event.turnStarted', 'event.turnDelta', 'event.turnCompleted']),
     );
     expect(hasSnakeCaseKeys(turnOut)).toBe(false);
+  });
+
+  it('returns skills.list data in codex-compatible shape', () => {
+    const dataDir = createTempDataDir();
+    const cwd = join(dataDir, 'repo');
+    const skillDir = join(cwd, '.claude', 'skills', 'read-github');
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(
+      join(skillDir, 'SKILL.md'),
+      '# read-github\n\nRead docs from GitHub repositories quickly.\n',
+      'utf8',
+    );
+
+    const router = createRouter();
+    const out = router.handle({
+      jsonrpc: '2.0',
+      id: 'req-skills',
+      method: 'skills.list',
+      params: {
+        cwd,
+      },
+    });
+
+    const result = getResult<{ data: Array<{ cwd: string; skills: Array<{ name: string; shortDescription: string; scope: string }> }> }>(out.response);
+
+    expect(result.data).toHaveLength(1);
+    expect(result.data[0]?.cwd).toBe(cwd);
+    expect(result.data[0]?.skills).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'read-github',
+          shortDescription: 'Read docs from GitHub repositories quickly.',
+          scope: 'workspace',
+        }),
+      ]),
+    );
+    expect(hasSnakeCaseKeys(result)).toBe(false);
   });
 
   it('returns method not found for unknown handlers', () => {

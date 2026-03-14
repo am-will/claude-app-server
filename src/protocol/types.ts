@@ -67,6 +67,11 @@ export interface TurnStartParams {
   provider?: 'codex' | 'claude';
 }
 
+export interface SkillsListParams {
+  cwd?: string;
+  cwds?: string[];
+}
+
 export interface ParsedRequest {
   kind: 'request';
   value: JsonRpcRequest;

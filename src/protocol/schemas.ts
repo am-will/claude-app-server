@@ -9,6 +9,7 @@ import type {
   ThreadReadParams,
   ThreadStartParams,
   TurnStartParams,
+  SkillsListParams,
 } from './types.js';
 
 const camelCaseSegment = '[a-z][A-Za-z0-9]*';
@@ -84,6 +85,13 @@ const turnStartParamsSchema = z
   })
   .strict();
 
+const skillsListParamsSchema = z
+  .object({
+    cwd: z.string().min(1).optional(),
+    cwds: z.array(z.string().min(1)).min(1).optional(),
+  })
+  .strict();
+
 function normalizeObjectAliases(input: unknown): Record<string, unknown> {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     return {};
@@ -148,6 +156,17 @@ export function parseTurnStartParams(input: unknown): TurnStartParams {
   };
 
   return turnStartParamsSchema.parse(normalized) as TurnStartParams;
+}
+
+export function parseSkillsListParams(input: unknown): SkillsListParams {
+  const source = normalizeObjectAliases(input);
+
+  const normalized = {
+    cwd: readAliasedField(source, 'cwd', 'working_directory'),
+    cwds: source.cwds,
+  };
+
+  return skillsListParamsSchema.parse(normalized) as SkillsListParams;
 }
 
 export function parseJsonRpcRequest(input: unknown): JsonRpcRequest {
