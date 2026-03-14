@@ -2,17 +2,15 @@
   "name": "claude-app-server",
   "version": "0.1.0",
   "private": true,
-  "description": "Provider-agnostic JSON-RPC app server contract and adapters",
-  "license": "UNLICENSED",
+  "type": "module",
   "scripts": {
-    "lint": "markdownlint-cli2 \"docs/**/*.md\"",
-    "format": "prettier --write \"**/*.{md,json,yml,yaml}\"",
-    "format:check": "prettier --check \"**/*.{md,json,yml,yaml}\"",
-    "test": "npm run test:contract",
-    "test:contract": "echo \"Contract tests to be added under tests/contract/v1\""
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "devDependencies": {
-    "markdownlint-cli2": "^0.18.1",
-    "prettier": "^3.3.3"
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.7",
+    "zod": "^4.0.1"
   }
 }
