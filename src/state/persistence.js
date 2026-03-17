@@ -75,6 +75,8 @@ class ThreadStateStore {
         threads[threadId] = {
           threadId,
           title: null,
+          cwd: null,
+          provider: null,
           createdAt: event.at,
           updatedAt: event.at,
           messageCount: 0,
@@ -88,6 +90,8 @@ class ThreadStateStore {
       switch (event.type) {
         case 'thread.created': {
           if (event.title) thread.title = event.title;
+          if (event.cwd !== undefined) thread.cwd = event.cwd;
+          if (event.provider !== undefined) thread.provider = event.provider;
           if (Array.isArray(event.tags)) thread.tags = [...event.tags];
           thread.createdAt = thread.createdAt || event.at;
           thread.updatedAt = event.at;
@@ -125,6 +129,9 @@ class ThreadStateStore {
 
     if (filters.tag) {
       items = items.filter((t) => Array.isArray(t.tags) && t.tags.includes(filters.tag));
+    }
+    if (filters.provider) {
+      items = items.filter((t) => t.provider === filters.provider);
     }
 
     items.sort((a, b) => {

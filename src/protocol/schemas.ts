@@ -1,15 +1,18 @@
 import { z } from 'zod';
 import type {
+  ClaudeModelId,
+  ClaudeReasoningEffort,
   JsonRpcErrorResponse,
   JsonRpcNotification,
   JsonRpcRequest,
   JsonRpcResponse,
+  ModelListItem,
   ParsedJsonRpcMessage,
+  SkillsListParams,
   ThreadListParams,
   ThreadReadParams,
   ThreadStartParams,
   TurnStartParams,
-  SkillsListParams,
 } from './types.js';
 
 const camelCaseSegment = '[a-z][A-Za-z0-9]*';
@@ -62,12 +65,17 @@ const threadStartParamsSchema = z
   .object({
     title: z.string().min(1).optional(),
     tags: z.array(z.string().min(1)).optional(),
+    cwd: z.string().min(1).optional(),
+    provider: z.enum(['codex', 'claude']).optional(),
   })
   .strict();
 
 const threadListParamsSchema = z
   .object({
     tag: z.string().min(1).optional(),
+    provider: z.enum(['codex', 'claude']).optional(),
+    limit: z.number().int().positive().max(500).optional(),
+    cursor: z.string().min(1).optional(),
   })
   .strict();
 
@@ -77,13 +85,48 @@ const threadReadParamsSchema = z
   })
   .strict();
 
+const turnStartModelSchema = z.enum([
+  'claude-opus-4-6',
+  'claude-sonnet-4-6',
+  'claude-haiku-4-5',
+]);
+
+const turnStartEffortSchema = z.enum(['low', 'med', 'high', 'max']);
+
+const modelEffortCompatibility: Record<ClaudeModelId, readonly ClaudeReasoningEffort[]> = {
+  'claude-opus-4-6': ['low', 'med', 'high', 'max'],
+  'claude-sonnet-4-6': ['low', 'med', 'high'],
+  'claude-haiku-4-5': [],
+} as const;
+
+const defaultModel: ClaudeModelId = 'claude-sonnet-4-6';
+
 const turnStartParamsSchema = z
   .object({
     threadId: z.string().min(1),
     input: z.string().min(1),
     provider: z.enum(['codex', 'claude']).optional(),
+    model: turnStartModelSchema.optional(),
+    effort: turnStartEffortSchema.optional(),
+    cwd: z.string().min(1).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((params, ctx) => {
+    const model = params.model ?? defaultModel;
+    const effort = params.effort;
+
+    if (!effort) {
+      return;
+    }
+
+    const allowedEfforts = modelEffortCompatibility[model];
+    if (!allowedEfforts.includes(effort)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Invalid params: effort '${effort}' is not supported for model '${model}'`,
+      });
+    }
+  });
 
 const skillsListParamsSchema = z
   .object({
@@ -121,6 +164,8 @@ export function parseThreadStartParams(input: unknown): ThreadStartParams {
   const normalized = {
     title: source.title,
     tags: source.tags,
+    cwd: readAliasedField(source, 'cwd', 'working_directory'),
+    provider: source.provider,
   };
 
   return threadStartParamsSchema.parse(normalized) as ThreadStartParams;
@@ -131,6 +176,9 @@ export function parseThreadListParams(input: unknown): ThreadListParams {
 
   const normalized = {
     tag: source.tag,
+    provider: source.provider,
+    limit: source.limit,
+    cursor: source.cursor,
   };
 
   return threadListParamsSchema.parse(normalized) as ThreadListParams;
@@ -149,14 +197,45 @@ export function parseThreadReadParams(input: unknown): ThreadReadParams {
 export function parseTurnStartParams(input: unknown): TurnStartParams {
   const source = normalizeObjectAliases(input);
 
-  const normalized = {
+  const normalized: Record<string, unknown> = {
     threadId: readAliasedField(source, 'threadId', 'thread_id'),
     input: source.input,
-    provider: source.provider,
   };
+  if (source.provider !== undefined) normalized.provider = source.provider;
+  if (source.model !== undefined) normalized.model = source.model;
+  if (source.effort !== undefined) normalized.effort = source.effort;
+  if (source.cwd !== undefined || source.working_directory !== undefined) {
+    normalized.cwd = readAliasedField(source, 'cwd', 'working_directory');
+  }
 
   return turnStartParamsSchema.parse(normalized) as TurnStartParams;
 }
+
+export const MODEL_LIST_DATA: readonly ModelListItem[] = [
+  {
+    id: 'claude-opus-4-6',
+    model: 'claude-opus-4-6',
+    displayName: 'Claude Opus 4.6',
+    isDefault: false,
+    supportedReasoningEfforts: ['low', 'med', 'high', 'max'],
+    defaultReasoningEffort: 'med',
+  },
+  {
+    id: 'claude-sonnet-4-6',
+    model: 'claude-sonnet-4-6',
+    displayName: 'Claude Sonnet 4.6',
+    isDefault: true,
+    supportedReasoningEfforts: ['low', 'med', 'high'],
+    defaultReasoningEffort: 'med',
+  },
+  {
+    id: 'claude-haiku-4-5',
+    model: 'claude-haiku-4-5',
+    displayName: 'Claude Haiku 4.5',
+    isDefault: false,
+    supportedReasoningEfforts: [],
+  },
+] as const;
 
 export function parseSkillsListParams(input: unknown): SkillsListParams {
   const source = normalizeObjectAliases(input);

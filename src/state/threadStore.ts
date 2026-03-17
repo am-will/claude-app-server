@@ -11,6 +11,8 @@ export interface ThreadMessageRecord {
 export interface ThreadRecord {
   threadId: string;
   title: string | null;
+  cwd: string | null;
+  provider: 'codex' | 'claude' | null;
   createdAt: string;
   updatedAt: string;
   messageCount: number;
@@ -19,7 +21,15 @@ export interface ThreadRecord {
 }
 
 export type ThreadEvent =
-  | { type: 'thread.created'; threadId: string; title?: string | null; tags?: string[]; at?: string }
+  | {
+      type: 'thread.created';
+      threadId: string;
+      title?: string | null;
+      tags?: string[];
+      cwd?: string | null;
+      provider?: 'codex' | 'claude';
+      at?: string;
+    }
   | {
       type: 'message.added';
       threadId: string;
@@ -85,6 +95,8 @@ export class ThreadStateStore {
         threads[event.threadId] = {
           threadId: event.threadId,
           title: null,
+          cwd: null,
+          provider: null,
           createdAt: event.at,
           updatedAt: event.at,
           messageCount: 0,
@@ -98,6 +110,8 @@ export class ThreadStateStore {
       if (event.type === 'thread.created') {
         thread.title = event.title ?? null;
         thread.tags = Array.isArray(event.tags) ? [...event.tags] : [];
+        thread.cwd = event.cwd ?? thread.cwd;
+        thread.provider = event.provider ?? thread.provider;
         thread.createdAt = thread.createdAt || event.at;
         thread.updatedAt = event.at;
       }
@@ -123,12 +137,15 @@ export class ThreadStateStore {
     return snapshot;
   }
 
-  public listThreads(filters: { tag?: string } = {}): ThreadRecord[] {
+  public listThreads(filters: { tag?: string; provider?: 'codex' | 'claude' } = {}): ThreadRecord[] {
     const snapshot = this.loadSnapshot();
     let list = Object.values(snapshot.threads);
 
     if (filters.tag) {
       list = list.filter((thread) => thread.tags.includes(filters.tag as string));
+    }
+    if (filters.provider) {
+      list = list.filter((thread) => thread.provider === filters.provider);
     }
 
     return list.sort((a, b) => {

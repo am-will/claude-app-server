@@ -2,7 +2,9 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import type { ProviderAdapter } from '../src/adapters/provider.js';
 import type { JsonRpcResponse } from '../src/protocol/types.js';
+import { createTurnCompletedEvent, createTurnDeltaEvent } from '../src/server/events.js';
 import { createRouter } from '../src/server/router.js';
 
 function hasSnakeCaseKeys(value: unknown): boolean {
@@ -75,6 +77,7 @@ describe('server router', () => {
       capabilities: [
         'session.initialize',
         'capability.list',
+        'model.list',
         'thread.start',
         'thread.list',
         'thread.read',
@@ -86,6 +89,8 @@ describe('server router', () => {
 
   it('uses persistence-backed threads across router instances and supports thread.list + thread.read', () => {
     const dataDir = createTempDataDir();
+    const workspaceCwd = join(dataDir, 'workspace');
+    mkdirSync(workspaceCwd, { recursive: true });
 
     const routerA = createRouter({ dataDir });
 
@@ -96,10 +101,13 @@ describe('server router', () => {
       params: {
         title: 'Demo Thread',
         tags: ['demo'],
+        cwd: workspaceCwd,
       },
     });
 
-    const threadId = getResult<{ threadId: string }>(threadOut.response).threadId;
+    const threadStartResult = getResult<{ threadId: string; cwd: string }>(threadOut.response);
+    const threadId = threadStartResult.threadId;
+    expect(threadStartResult.cwd).toBe(workspaceCwd);
 
     routerA.handle({
       jsonrpc: '2.0',
@@ -128,7 +136,7 @@ describe('server router', () => {
       expect.arrayContaining([
         expect.objectContaining({
           threadId,
-          messageCount: 1,
+          messageCount: 2,
         }),
       ]),
     );
@@ -144,7 +152,9 @@ describe('server router', () => {
 
     const readResult = getResult<{ thread: { threadId: string; messages: Array<{ content: string }> } }>(readOut.response);
     expect(readResult.thread.threadId).toBe(threadId);
+    expect((readResult.thread as { cwd?: string }).cwd).toBe(workspaceCwd);
     expect(readResult.thread.messages[0]?.content).toBe('hello world');
+    expect(readResult.thread.messages[1]?.content).toBe('Codex received: hello world');
     expect(hasSnakeCaseKeys(readOut)).toBe(false);
   });
 
@@ -178,6 +188,313 @@ describe('server router', () => {
       expect.arrayContaining(['event.turnStarted', 'event.turnDelta', 'event.turnCompleted']),
     );
     expect(hasSnakeCaseKeys(turnOut)).toBe(false);
+  });
+
+  it('persists assistant output for non-streaming provider events', () => {
+    const router = createRouter();
+
+    const threadOut = router.handle({
+      jsonrpc: '2.0',
+      id: 'req-thread-persist-sync',
+      method: 'thread.start',
+      params: {
+        provider: 'claude',
+      },
+    });
+    const threadId = getResult<{ threadId: string }>(threadOut.response).threadId;
+
+    router.handle({
+      jsonrpc: '2.0',
+      id: 'req-turn-persist-sync',
+      method: 'turn.start',
+      params: {
+        threadId,
+        input: 'persist this',
+        provider: 'claude',
+      },
+    });
+
+    const readOut = router.handle({
+      jsonrpc: '2.0',
+      id: 'req-read-persist-sync',
+      method: 'thread.read',
+      params: { threadId },
+    });
+    const readResult = getResult<{ thread: { messages: Array<{ role: string; content: string }> } }>(readOut.response);
+    expect(readResult.thread.messages).toHaveLength(2);
+    expect(readResult.thread.messages[0]).toMatchObject({ role: 'user', content: 'persist this' });
+    expect(readResult.thread.messages[1]).toMatchObject({ role: 'assistant' });
+    expect(readResult.thread.messages[1]?.content).toContain('persist this');
+  });
+
+  it('persists assistant output for streaming provider events', () => {
+    const streamingClaudeAdapter: ProviderAdapter = {
+      name: 'claude',
+      startTurn: () => ({
+        accepted: true,
+        providerMessage: 'unused for streaming path',
+        events: [],
+      }),
+      async startTurnStreaming(input, emit) {
+        emit(
+          createTurnDeltaEvent({
+            threadId: input.threadId,
+            turnId: input.turnId,
+            chunk: 'streamed reply',
+          }),
+        );
+        emit(
+          createTurnCompletedEvent({
+            threadId: input.threadId,
+            turnId: input.turnId,
+          }),
+        );
+        return {
+          accepted: true,
+          providerMessage: 'streaming complete',
+          events: [],
+        };
+      },
+    };
+
+    const codexAdapter: ProviderAdapter = {
+      name: 'codex',
+      startTurn(input) {
+        return {
+          accepted: true,
+          providerMessage: 'codex mock',
+          events: [
+            createTurnDeltaEvent({
+              threadId: input.threadId,
+              turnId: input.turnId,
+              chunk: input.input,
+            }),
+            createTurnCompletedEvent({
+              threadId: input.threadId,
+              turnId: input.turnId,
+            }),
+          ],
+        };
+      },
+    };
+
+    const router = createRouter({
+      providers: {
+        codex: codexAdapter,
+        claude: streamingClaudeAdapter,
+      },
+      providerOptions: {
+        claudeMode: 'cli',
+      },
+    });
+
+    const threadOut = router.handle({
+      jsonrpc: '2.0',
+      id: 'req-thread-persist-stream',
+      method: 'thread.start',
+      params: {
+        provider: 'claude',
+      },
+    });
+    const threadId = getResult<{ threadId: string }>(threadOut.response).threadId;
+
+    router.handle({
+      jsonrpc: '2.0',
+      id: 'req-turn-persist-stream',
+      method: 'turn.start',
+      params: {
+        threadId,
+        input: 'ignored',
+        provider: 'claude',
+      },
+    });
+
+    const readOut = router.handle({
+      jsonrpc: '2.0',
+      id: 'req-read-persist-stream',
+      method: 'thread.read',
+      params: { threadId },
+    });
+    const readResult = getResult<{ thread: { messages: Array<{ role: string; content: string }> } }>(readOut.response);
+    expect(readResult.thread.messages).toHaveLength(2);
+    expect(readResult.thread.messages[0]).toMatchObject({ role: 'user', content: 'ignored' });
+    expect(readResult.thread.messages[1]).toMatchObject({ role: 'assistant', content: 'streamed reply' });
+  });
+
+  it('builds claude turn input with prior conversation context', () => {
+    const seenInputs: string[] = [];
+    const claudeAdapter: ProviderAdapter = {
+      name: 'claude',
+      startTurn(input) {
+        seenInputs.push(input.input);
+        return {
+          accepted: true,
+          providerMessage: 'ok',
+          events: [
+            createTurnDeltaEvent({
+              threadId: input.threadId,
+              turnId: input.turnId,
+              chunk: 'assistant reply',
+            }),
+            createTurnCompletedEvent({
+              threadId: input.threadId,
+              turnId: input.turnId,
+            }),
+          ],
+        };
+      },
+    };
+
+    const codexAdapter: ProviderAdapter = {
+      name: 'codex',
+      startTurn(input) {
+        return {
+          accepted: true,
+          providerMessage: 'ok',
+          events: [
+            createTurnDeltaEvent({
+              threadId: input.threadId,
+              turnId: input.turnId,
+              chunk: input.input,
+            }),
+            createTurnCompletedEvent({
+              threadId: input.threadId,
+              turnId: input.turnId,
+            }),
+          ],
+        };
+      },
+    };
+
+    const router = createRouter({
+      providers: {
+        codex: codexAdapter,
+        claude: claudeAdapter,
+      },
+    });
+
+    const threadOut = router.handle({
+      jsonrpc: '2.0',
+      id: 'req-thread-context',
+      method: 'thread.start',
+      params: { provider: 'claude' },
+    });
+    const threadId = getResult<{ threadId: string }>(threadOut.response).threadId;
+
+    router.handle({
+      jsonrpc: '2.0',
+      id: 'req-turn-context-1',
+      method: 'turn.start',
+      params: {
+        threadId,
+        input: 'first question',
+        provider: 'claude',
+      },
+    });
+
+    router.handle({
+      jsonrpc: '2.0',
+      id: 'req-turn-context-2',
+      method: 'turn.start',
+      params: {
+        threadId,
+        input: 'second question',
+        provider: 'claude',
+      },
+    });
+
+    expect(seenInputs).toHaveLength(2);
+    expect(seenInputs[0]).toContain('first question');
+    expect(seenInputs[1]).toContain('Conversation history:');
+    expect(seenInputs[1]).toContain('User: first question');
+    expect(seenInputs[1]).toContain('Assistant: assistant reply');
+    expect(seenInputs[1]).toContain('User: second question');
+  });
+
+  it('returns model.list data in codex-compatible shape with defaults', () => {
+    const router = createRouter();
+    const out = router.handle({
+      jsonrpc: '2.0',
+      id: 'req-models',
+      method: 'model.list',
+    });
+
+    const result = getResult<{ data: Array<{ id: string; isDefault: boolean; defaultReasoningEffort?: string }> }>(
+      out.response,
+    );
+    expect(result.data.length).toBeGreaterThan(0);
+    expect(result.data).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'claude-sonnet-4-6',
+          isDefault: true,
+          defaultReasoningEffort: 'med',
+        }),
+      ]),
+    );
+    expect(hasSnakeCaseKeys(result)).toBe(false);
+  });
+
+  it('rejects invalid turn.start model and effort combinations with -32602', () => {
+    const router = createRouter();
+    const threadOut = router.handle({
+      jsonrpc: '2.0',
+      id: 'req-thread',
+      method: 'thread.start',
+    });
+    const threadId = getResult<{ threadId: string }>(threadOut.response).threadId;
+
+    const turnOut = router.handle({
+      jsonrpc: '2.0',
+      id: 'req-turn-invalid',
+      method: 'turn.start',
+      params: {
+        threadId,
+        input: 'hello',
+        model: 'claude-haiku-4-5',
+        effort: 'low',
+      },
+    });
+
+    expect(turnOut.response).toEqual({
+      jsonrpc: '2.0',
+      id: 'req-turn-invalid',
+      error: {
+        code: -32602,
+        message: 'Invalid params',
+      },
+    });
+  });
+
+  it('rejects turn.start when cwd does not exist', () => {
+    const router = createRouter();
+    const threadOut = router.handle({
+      jsonrpc: '2.0',
+      id: 'req-thread-cwd',
+      method: 'thread.start',
+    });
+    const threadId = getResult<{ threadId: string }>(threadOut.response).threadId;
+
+    const turnOut = router.handle({
+      jsonrpc: '2.0',
+      id: 'req-turn-missing-cwd',
+      method: 'turn.start',
+      params: {
+        threadId,
+        input: 'hello',
+        provider: 'claude',
+        cwd: '/this/path/does/not/exist',
+      },
+    });
+
+    expect(turnOut.response).toEqual({
+      jsonrpc: '2.0',
+      id: 'req-turn-missing-cwd',
+      error: {
+        code: -32602,
+        message: 'Invalid params: cwd does not exist: /this/path/does/not/exist',
+      },
+    });
   });
 
   it('returns skills.list data in codex-compatible shape', () => {
@@ -233,5 +550,40 @@ describe('server router', () => {
         message: 'Method not found',
       },
     });
+  });
+
+  it('thread.list is provider-scoped to claude by default', () => {
+    const router = createRouter();
+
+    const claudeThreadOut = router.handle({
+      jsonrpc: '2.0',
+      id: 'req-thread-claude',
+      method: 'thread.start',
+      params: { provider: 'claude' },
+    });
+    const claudeThreadId = getResult<{ threadId: string }>(claudeThreadOut.response).threadId;
+
+    router.handle({
+      jsonrpc: '2.0',
+      id: 'req-thread-codex',
+      method: 'thread.start',
+      params: { provider: 'codex' },
+    });
+
+    const listOut = router.handle({
+      jsonrpc: '2.0',
+      id: 'req-list-provider-default',
+      method: 'thread.list',
+      params: { limit: 1, cursor: '0' },
+    });
+
+    const listResult = getResult<{
+      threads: Array<{ threadId: string; provider?: string | null }>;
+      data: Array<{ threadId: string; provider?: string | null }>;
+      nextCursor?: string;
+    }>(listOut.response);
+    expect(listResult.threads.map((t) => t.threadId)).toContain(claudeThreadId);
+    expect(listResult.data).toEqual(listResult.threads);
+    expect(listResult.threads.every((t) => t.provider === 'claude')).toBe(true);
   });
 });

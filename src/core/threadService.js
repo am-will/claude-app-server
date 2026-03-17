@@ -3,8 +3,8 @@ class ThreadService {
     this.store = store;
   }
 
-  createThread({ threadId, title = null, tags = [], at }) {
-    this.store.appendEvent({ type: 'thread.created', threadId, title, tags, at });
+  createThread({ threadId, title = null, tags = [], cwd = null, provider = null, at }) {
+    this.store.appendEvent({ type: 'thread.created', threadId, title, tags, cwd, provider, at });
     this.store.rebuildIndex();
     return this.readThread(threadId);
   }
@@ -22,8 +22,8 @@ class ThreadService {
     return this.readThread(threadId);
   }
 
-  listThreads({ tag } = {}) {
-    return this.store.listThreads({ tag });
+  listThreads({ tag, provider } = {}) {
+    return this.store.listThreads({ tag, provider });
   }
 
   readThread(threadId) {

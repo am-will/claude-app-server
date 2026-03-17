@@ -3,12 +3,23 @@ import type { ThreadRecord, ThreadStateStore } from '../state/threadStore.js';
 export class ThreadService {
   public constructor(private readonly store: ThreadStateStore) {}
 
-  public createThread(input: { threadId: string; title?: string; tags?: string[]; at?: string }): ThreadRecord {
+  public createThread(
+    input: {
+      threadId: string;
+      title?: string;
+      tags?: string[];
+      cwd?: string;
+      provider?: 'codex' | 'claude';
+      at?: string;
+    },
+  ): ThreadRecord {
     this.store.appendEvent({
       type: 'thread.created',
       threadId: input.threadId,
       title: input.title,
       tags: input.tags,
+      cwd: input.cwd,
+      provider: input.provider,
       at: input.at,
     });
     this.store.rebuildIndex();
@@ -46,7 +57,7 @@ export class ThreadService {
     return thread;
   }
 
-  public listThreads(input: { tag?: string } = {}): ThreadRecord[] {
+  public listThreads(input: { tag?: string; provider?: 'codex' | 'claude' } = {}): ThreadRecord[] {
     return this.store.listThreads(input);
   }
 

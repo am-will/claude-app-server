@@ -51,10 +51,15 @@ export interface SessionInitializeParams {
 export interface ThreadStartParams {
   title?: string;
   tags?: string[];
+  cwd?: string;
+  provider?: 'codex' | 'claude';
 }
 
 export interface ThreadListParams {
   tag?: string;
+  provider?: 'codex' | 'claude';
+  limit?: number;
+  cursor?: string;
 }
 
 export interface ThreadReadParams {
@@ -65,11 +70,30 @@ export interface TurnStartParams {
   threadId: string;
   input: string;
   provider?: 'codex' | 'claude';
+  model?: ClaudeModelId;
+  effort?: ClaudeReasoningEffort;
+  cwd?: string;
 }
 
 export interface SkillsListParams {
   cwd?: string;
   cwds?: string[];
+}
+
+export type ClaudeModelId =
+  | 'claude-opus-4-6'
+  | 'claude-sonnet-4-6'
+  | 'claude-haiku-4-5';
+
+export type ClaudeReasoningEffort = 'low' | 'med' | 'high' | 'max';
+
+export interface ModelListItem {
+  id: ClaudeModelId;
+  model: ClaudeModelId;
+  displayName: string;
+  isDefault: boolean;
+  supportedReasoningEfforts: ClaudeReasoningEffort[];
+  defaultReasoningEffort?: Exclude<ClaudeReasoningEffort, 'max'>;
 }
 
 export interface ParsedRequest {

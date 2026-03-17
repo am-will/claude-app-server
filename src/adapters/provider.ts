@@ -1,11 +1,14 @@
 import { spawn, spawnSync } from 'node:child_process';
-import type { ServerEvent } from '../protocol/types.js';
+import type { ClaudeModelId, ClaudeReasoningEffort, ServerEvent } from '../protocol/types.js';
 import { createTurnCompletedEvent, createTurnDeltaEvent } from '../server/events.js';
 
 export interface ProviderTurnStartInput {
   threadId: string;
   turnId: string;
   input: string;
+  model?: ClaudeModelId;
+  effort?: ClaudeReasoningEffort;
+  cwd?: string;
 }
 
 export interface ProviderTurnStartResult {
@@ -42,6 +45,78 @@ function parseJsonLines(payload: string): unknown[] {
       }
     })
     .filter((item): item is unknown => item !== null);
+}
+
+function tryParseSingleJsonObject(payload: string): unknown | null {
+  const trimmed = payload.trim();
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return null;
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+function streamEventType(event: unknown): string | null {
+  if (!event || typeof event !== 'object') return null;
+  const typed = event as Record<string, unknown>;
+  const topType = ensureText(typed.type);
+  if (topType === 'stream_event') {
+    const nested = typed.event;
+    if (nested && typeof nested === 'object') {
+      return ensureText((nested as Record<string, unknown>).type);
+    }
+  }
+  return topType;
+}
+
+function eventHasTextDelta(event: unknown): boolean {
+  if (!event || typeof event !== 'object') return false;
+  const typed = event as Record<string, unknown>;
+  const topType = ensureText(typed.type);
+
+  if (topType === 'stream_event') {
+    const nested = typed.event;
+    if (!nested || typeof nested !== 'object') return false;
+    const nestedRecord = nested as Record<string, unknown>;
+    if (ensureText(nestedRecord.type) !== 'content_block_delta') return false;
+    const delta = nestedRecord.delta;
+    if (!delta || typeof delta !== 'object') return false;
+    return ensureText((delta as Record<string, unknown>).text) !== null;
+  }
+
+  if (topType === 'content_block_delta') {
+    const delta = typed.delta;
+    if (!delta || typeof delta !== 'object') return false;
+    return ensureText((delta as Record<string, unknown>).text) !== null;
+  }
+
+  return false;
+}
+
+export function buildClaudeCliArgs(
+  input: ProviderTurnStartInput,
+  permissionMode: 'default' | 'acceptEdits' | 'bypassPermissions',
+): string[] {
+  const args = [
+    '-p',
+    input.input,
+    '--output-format',
+    'stream-json',
+    '--include-partial-messages',
+    '--verbose',
+    '--permission-mode',
+    permissionMode,
+  ];
+
+  if (input.model) {
+    args.push('--model', input.model);
+  }
+  if (input.effort) {
+    args.push('--effort', input.effort);
+  }
+
+  return args;
 }
 
 export function translateClaudeStreamEvents(
@@ -198,19 +273,11 @@ export class ClaudeProviderAdapter implements ProviderAdapter {
 
     const cli = spawnSync(
       'claude',
-      [
-        '-p',
-        input.input,
-        '--output-format',
-        'stream-json',
-        '--include-partial-messages',
-        '--verbose',
-        '--permission-mode',
-        this.options.permissionMode,
-      ],
+      buildClaudeCliArgs(input, this.options.permissionMode),
       {
         encoding: 'utf8',
         maxBuffer: 10 * 1024 * 1024,
+        cwd: input.cwd,
       },
     );
 
@@ -261,30 +328,35 @@ export class ClaudeProviderAdapter implements ProviderAdapter {
     return await new Promise<ProviderTurnStartResult>((resolve) => {
       const child = spawn(
         'claude',
-        [
-          '-p',
-          input.input,
-          '--output-format',
-          'stream-json',
-          '--include-partial-messages',
-          '--verbose',
-          '--permission-mode',
-          this.options.permissionMode,
-        ],
-        { stdio: ['ignore', 'pipe', 'pipe'] },
+        buildClaudeCliArgs(input, this.options.permissionMode),
+        {
+          stdio: ['ignore', 'pipe', 'pipe'],
+          cwd: input.cwd,
+        },
       );
 
       let stdout = '';
       let stderr = '';
       let seenCompleted = false;
+      let seenTextDelta = false;
 
       const handleLine = (line: string) => {
         const parsed = parseJsonLines(line);
+        const hasResult = parsed.some((item) => streamEventType(item) === 'result');
+        const hasTextDelta = parsed.some(eventHasTextDelta);
+        const suppressResultDelta = hasResult && !hasTextDelta && seenTextDelta;
+
         const events = translateClaudeStreamEvents(parsed, {
           threadId: input.threadId,
           turnId: input.turnId,
         });
         for (const event of events) {
+          if (suppressResultDelta && event.method === 'event.turnDelta') {
+            continue;
+          }
+          if (event.method === 'event.turnDelta') {
+            seenTextDelta = true;
+          }
           if (event.method === 'event.turnCompleted') seenCompleted = true;
           emit(event);
         }
@@ -299,6 +371,13 @@ export class ClaudeProviderAdapter implements ProviderAdapter {
           stdout = stdout.slice(idx + 1);
           if (line) handleLine(line);
         }
+        // Some Claude CLI builds flush complete JSON objects without trailing newlines.
+        // Parse those immediately so deltas stay smooth in UI.
+        const parsedSingle = tryParseSingleJsonObject(stdout);
+        if (parsedSingle) {
+          handleLine(stdout);
+          stdout = '';
+        }
       });
 
       child.stderr.setEncoding('utf8');
@@ -309,6 +388,18 @@ export class ClaudeProviderAdapter implements ProviderAdapter {
       child.on('close', (code) => {
         if (stdout.trim()) {
           handleLine(stdout.trim());
+        }
+        if (code !== 0) {
+          const detail = stderr.trim();
+          if (detail) {
+            emit(
+              createTurnDeltaEvent({
+                threadId: input.threadId,
+                turnId: input.turnId,
+                chunk: `Claude provider error: ${detail}`,
+              }),
+            );
+          }
         }
         if (!seenCompleted) {
           emit(
