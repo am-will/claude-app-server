@@ -2,7 +2,7 @@
 
 A provider-capable JSON-RPC app server for mobile/IDE clients.
 
-It currently supports Claude and Codex adapters (Claude is wired to real CLI streaming), persistence-backed threads, and a canonical camelCase protocol surface.
+It currently supports Claude (wired to real CLI streaming), persistence-backed threads, and a canonical camelCase protocol surface.
 
 ## Features
 
